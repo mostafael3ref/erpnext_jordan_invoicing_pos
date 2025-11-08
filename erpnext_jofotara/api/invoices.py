@@ -12,7 +12,7 @@ from frappe import _
 from frappe.utils import now
 
 from .client import post_invoice, to_b64          # post_invoice(b64xml) -> dict
-from .transform import build_invoice_xml          # build_invoice_xml(sales_invoice_name) -> xml string
+from .transform import build_invoice_xml          # build_invoice_xml(name, doctype) -> xml string
 
 
 # =========================
@@ -66,7 +66,7 @@ def _save_xml_snapshot(doc, xml_str: str) -> None:
             "file_name": f"{doc.name}-ubl.xml",
             "content": xml_str,
             "is_private": 1,
-            "attached_to_doctype": "Sales Invoice",
+            "attached_to_doctype": doc.doctype,
             "attached_to_name": doc.name,
         }).insert(ignore_permissions=True)
 
@@ -129,7 +129,7 @@ def _save_qr_image_on_invoice(inv_doc) -> None:
             "file_name": f"{inv_doc.name}-qr.png",
             "is_private": 1,
             "content": content,
-            "attached_to_doctype": "Sales Invoice",
+            "attached_to_doctype": inv_doc.doctype,
             "attached_to_name": inv_doc.name,
         }).insert(ignore_permissions=True)
 
@@ -186,15 +186,14 @@ def _apply_response_to_invoice(doc, resp: Dict[str, Any]) -> None:
 
 
 # =========================
-# Public API
+# Core sender (Sales & POS)
 # =========================
 
-@frappe.whitelist()
-def send_now(name: str) -> Dict[str, Any]:
-    """إرسال فاتورة Sales Invoice واحدة إلى JoFotara يدويًا."""
-    doc = frappe.get_doc("Sales Invoice", name)
+def _send_doc_to_jofotara(doc, *, show_msg: bool = False) -> Dict[str, Any]:
+    """منطق الإرسال المشترك بين Sales Invoice و POS Invoice."""
+    doctype = getattr(doc, "doctype", "Sales Invoice")
 
-    xml = build_invoice_xml(doc.name)
+    xml = build_invoice_xml(doc.name, doctype=doctype)
     if not xml:
         frappe.throw(_("Failed to build UBL 2.1 XML for this invoice."))
 
@@ -206,13 +205,26 @@ def send_now(name: str) -> Dict[str, Any]:
         resp = post_invoice(b64)
     except Exception as e:
         _set_status(doc, "Error", err=str(e))
-        frappe.log_error(frappe.get_traceback(), "JoFotara Send Now Error")
+        frappe.log_error(frappe.get_traceback(), "JoFotara Send Error")
         raise
 
     _apply_response_to_invoice(doc, resp)
 
-    frappe.msgprint(_("JoFotara: Invoice submitted successfully."), alert=1, indicator="green")
+    if show_msg:
+        frappe.msgprint(_("JoFotara: Invoice submitted successfully."), alert=1, indicator="green")
+
     return resp
+
+
+# =========================
+# Public API
+# =========================
+
+@frappe.whitelist()
+def send_now(name: str) -> Dict[str, Any]:
+    """إرسال فاتورة Sales Invoice واحدة إلى JoFotara يدويًا."""
+    doc = frappe.get_doc("Sales Invoice", name)
+    return _send_doc_to_jofotara(doc, show_msg=True)
 
 
 def on_submit_sales_invoice(doc, method: str | None = None) -> None:
@@ -227,11 +239,30 @@ def on_submit_sales_invoice(doc, method: str | None = None) -> None:
         if not enabled:
             return
 
-        send_now(doc.name)
+        _send_doc_to_jofotara(doc)
 
     except Exception as e:
         _set_status(doc, "Error", err=str(e))
         frappe.log_error(frappe.get_traceback(), "JoFotara on_submit error")
+
+
+def on_submit_pos_invoice(doc, method: str | None = None) -> None:
+    """Hook عند Submit لـ POS Invoice — نفس منطق Sales Invoice."""
+    try:
+        s = _get_settings()
+        enabled = 0
+        for fname in ("send_on_submit", "auto_send_on_submit"):
+            if getattr(s, fname, None):
+                enabled = int(getattr(s, fname) or 0)
+                break
+        if not enabled:
+            return
+
+        _send_doc_to_jofotara(doc)
+
+    except Exception as e:
+        _set_status(doc, "Error", err=str(e))
+        frappe.log_error(frappe.get_traceback(), "JoFotara POS Invoice on_submit error")
 
 
 # Backward-compatible alias
@@ -240,12 +271,13 @@ def on_submit_send(doc, method=None):
 
 
 @frappe.whitelist()
-def attach_qr_image(name: str):
+def attach_qr_image(name: str, doctype: str = "Sales Invoice"):
     """
     (يدويًا) ولّد صورة QR على السيرفر واربطها بالفاتورة.
     مفيد لو عندك فواتير قديمة فيها نص QR بدون صورة.
+    يدعم Sales Invoice و POS Invoice.
     """
-    doc = frappe.get_doc("Sales Invoice", name)
+    doc = frappe.get_doc(doctype, name)
     qr_text = (getattr(doc, "jofotara_qr", "") or "").strip()
     if not qr_text:
         frappe.throw(_("No QR payload found on this invoice."))
@@ -259,7 +291,7 @@ def attach_qr_image(name: str):
         "file_name": f"{doc.name}-qr.png",
         "is_private": 1,
         "content": content,
-        "attached_to_doctype": "Sales Invoice",
+        "attached_to_doctype": doc.doctype,
         "attached_to_name": doc.name,
     }).insert(ignore_permissions=True)
 
