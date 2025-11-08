@@ -14,7 +14,10 @@ doctype_js = {}
 doc_events = {
     "Sales Invoice": {
         "on_submit": "erpnext_jofotara.api.invoices.on_submit_sales_invoice"
-    }
+    },
+    "POS Invoice": {
+        "on_submit": "erpnext_jofotara.api.invoices.on_submit_pos_invoice"
+    },
 }
 
 after_migrate = ["erpnext_jofotara.install.after_migrate"]
