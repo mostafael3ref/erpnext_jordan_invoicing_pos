@@ -172,8 +172,12 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
       - الكميات في المرتجع موجبة (زي Odoo)
       - BillingReference و PaymentMeans في المرتجع
       - ✅ ترتيب العناصر يراعي الـ XSD (PaymentMeans بعد SellerSupplierParty)
+
+    يدعم:
+      - Sales Invoice  (القديم)
+      - POS Invoice     (الجديد)  => بنفس الـ schema بالظبط
     """
-    # هنا نسمح بأي دوكتايب شبه Sales Invoice (مثل POS Invoice)
+    # هنا التغيير الأساسي: بنستخدم doctype ديناميك
     doc = frappe.get_doc(doctype, name)
 
     is_return = int(getattr(doc, "is_return", 0) or 0) == 1
@@ -259,7 +263,7 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
         orig_id = getattr(doc, "return_against", "") or getattr(doc, "amended_from", "") or ""
         if orig_id:
             try:
-                # نفس نوع المستند (Sales Invoice أو POS Invoice)
+                # مهم: نفس نوع المستند (Sales أو POS)
                 orig = frappe.get_doc(doctype, orig_id)
                 orig_total = _dec(getattr(orig, "grand_total", 0) or 0)
                 orig_uuid = getattr(orig, "jofotara_uuid", "") or ""
@@ -383,7 +387,7 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
         tcat = SubElement(tsub, _qn("cac", "TaxCategory"))
         SubElement(tcat, _qn("cbc", "ID"), {"schemeAgencyID": VAT_SCHEME_AGENCY, "schemeID": VAT_SCHEME_5305}).text = "S"
         SubElement(tcat, _qn("cbc", "Percent")).text = f"{_q3(L['vat_rate']):.1f}"
-        tsch = SubElement(tcat, _qn("cbc", "TaxScheme"))
+        tsch = SubElement(tcat, _qn("cac", "TaxScheme"))
         SubElement(tsch, _qn("cbc", "ID"), {"schemeAgencyID": VAT_SCHEME_AGENCY, "schemeID": VAT_SCHEME_5153}).text = "VAT"
 
         # Item
