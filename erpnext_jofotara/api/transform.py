@@ -12,7 +12,7 @@ import re
 import uuid
 
 import frappe
-from frappe.utils import getdate
+from frappe.utils import getdate, today
 
 # ================================
 # Namespaces & Constants
@@ -160,7 +160,7 @@ def _global_vat_rate(doc) -> Decimal:
 # Public: build UBL XML
 # ================================
 
-def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
+def build_invoice_xml(sales_invoice_name: str) -> str:
     """
     يولّد UBL 2.1 بمعيار Odoo المقبول لدى JoFotara:
       - ProfileID=reporting:1.0
@@ -172,15 +172,22 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
       - الكميات في المرتجع موجبة (زي Odoo)
       - BillingReference و PaymentMeans في المرتجع
       - ✅ ترتيب العناصر يراعي الـ XSD (PaymentMeans بعد SellerSupplierParty)
-
-    يدعم:
-      - Sales Invoice
-      - POS Invoice
     """
-    doc = frappe.get_doc(doctype, name)
+    doc = frappe.get_doc("Sales Invoice", sales_invoice_name)
 
     is_return = int(getattr(doc, "is_return", 0) or 0) == 1
-    issue_date = str(getdate(getattr(doc, "posting_date", None)) or getdate())
+
+    # ===========================
+    # IssueDate: منع تاريخ المستقبل
+    # ===========================
+    posting_date = getattr(doc, "posting_date", None)
+    issue_date_dt = getdate(posting_date) if posting_date else getdate()
+    today_dt = getdate(today())
+    if issue_date_dt > today_dt:
+        issue_date_dt = today_dt
+    issue_date = str(issue_date_dt)
+    # ===========================
+
     inv_code = CREDIT_NOTE if is_return else INVOICE
     inv_name_attr = "022"  # ثابت زي المثال المقبول
 
@@ -262,7 +269,7 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
         orig_id = getattr(doc, "return_against", "") or getattr(doc, "amended_from", "") or ""
         if orig_id:
             try:
-                orig = frappe.get_doc(doctype, orig_id)
+                orig = frappe.get_doc("Sales Invoice", orig_id)
                 orig_total = _dec(getattr(orig, "grand_total", 0) or 0)
                 orig_uuid = getattr(orig, "jofotara_uuid", "") or ""
             except Exception:
@@ -401,10 +408,6 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
         SubElement(pac, _qn("cbc", "Amount"), {"currencyID": cur_id}).text = _fmt(L["line_disc"])
 
     xml = tostring(inv, encoding="utf-8", method="xml").decode("utf-8")
-
-    # 🔒 حزام أمان ضد أى cbc:TaxScheme
-    if "cbc:TaxScheme" in xml:
-        xml = xml.replace("cbc:TaxScheme", "cac:TaxScheme")
 
     try:
         s = _get_settings()
