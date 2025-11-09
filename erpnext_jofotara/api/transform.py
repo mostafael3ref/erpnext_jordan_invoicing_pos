@@ -174,10 +174,9 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
       - ✅ ترتيب العناصر يراعي الـ XSD (PaymentMeans بعد SellerSupplierParty)
 
     يدعم:
-      - Sales Invoice  (القديم)
-      - POS Invoice     (الجديد)  => بنفس الـ schema بالظبط
+      - Sales Invoice
+      - POS Invoice
     """
-    # هنا التغيير الأساسي: بنستخدم doctype ديناميك
     doc = frappe.get_doc(doctype, name)
 
     is_return = int(getattr(doc, "is_return", 0) or 0) == 1
@@ -263,7 +262,6 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
         orig_id = getattr(doc, "return_against", "") or getattr(doc, "amended_from", "") or ""
         if orig_id:
             try:
-                # مهم: نفس نوع المستند (Sales أو POS)
                 orig = frappe.get_doc(doctype, orig_id)
                 orig_total = _dec(getattr(orig, "grand_total", 0) or 0)
                 orig_uuid = getattr(orig, "jofotara_uuid", "") or ""
@@ -403,6 +401,10 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
         SubElement(pac, _qn("cbc", "Amount"), {"currencyID": cur_id}).text = _fmt(L["line_disc"])
 
     xml = tostring(inv, encoding="utf-8", method="xml").decode("utf-8")
+
+    # 🔒 حزام أمان ضد أى cbc:TaxScheme
+    if "cbc:TaxScheme" in xml:
+        xml = xml.replace("cbc:TaxScheme", "cac:TaxScheme")
 
     try:
         s = _get_settings()
