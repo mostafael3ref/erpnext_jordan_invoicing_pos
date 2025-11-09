@@ -28,14 +28,14 @@ for p, uri in NS.items():
     ET.register_namespace("" if p == "inv" else p, uri)
 
 CURRENCY_CODE_DOC = "JOD"   # header codes
-CURRENCY_ID_AMT = "JO"      # inside monetary amounts
+CURRENCY_ID_AMT  = "JO"     # inside monetary amounts
 FMT3 = Decimal("0.001")
 
 VAT_SCHEME_AGENCY = "6"
-VAT_SCHEME_5305 = "UN/ECE 5305"
-VAT_SCHEME_5153 = "UN/ECE 5153"
+VAT_SCHEME_5305   = "UN/ECE 5305"
+VAT_SCHEME_5153   = "UN/ECE 5153"
 
-INVOICE = "388"
+INVOICE     = "388"
 CREDIT_NOTE = "381"
 
 # ================================
@@ -90,8 +90,13 @@ def _company_postal_zone(company_doc: dict) -> str:
     try:
         addr_link = frappe.get_all(
             "Dynamic Link",
-            filters={"link_doctype": "Company", "link_name": company_doc.get("name"), "parenttype": "Address"},
-            fields=["parent"], limit=1
+            filters={
+                "link_doctype": "Company",
+                "link_name": company_doc.get("name"),
+                "parenttype": "Address",
+            },
+            fields=["parent"],
+            limit=1,
         )
         if addr_link:
             addr = frappe.get_doc("Address", addr_link[0]["parent"])
@@ -160,33 +165,36 @@ def _global_vat_rate(doc) -> Decimal:
 # Public: build UBL XML
 # ================================
 
-def build_invoice_xml(sales_invoice_name: str) -> str:
+def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
     """
     يولّد UBL 2.1 بمعيار Odoo المقبول لدى JoFotara:
+
+      - يدعم:
+        * Sales Invoice
+        * POS Invoice
+
       - ProfileID=reporting:1.0
       - name="022" مع القيمة 388 للفاتورة، 381 للمرتجع
       - Document/TaxCurrencyCode = JOD، وكل currencyID داخل المبالغ = JO
       - الفاتورة: Header TaxTotal بدون Subtotal
       - المرتجع: Header TaxTotal + TaxSubtotal
-      - AllowanceCharge=0.000 في الهيدر وتحت السعر
       - الكميات في المرتجع موجبة (زي Odoo)
       - BillingReference و PaymentMeans في المرتجع
-      - ✅ ترتيب العناصر يراعي الـ XSD (PaymentMeans بعد SellerSupplierParty)
     """
-    doc = frappe.get_doc("Sales Invoice", sales_invoice_name)
+
+    # نجيب المستند (Sales أو POS) ديناميك
+    doc = frappe.get_doc(doctype, name)
 
     is_return = int(getattr(doc, "is_return", 0) or 0) == 1
 
-    # ===========================
-    # IssueDate: منع تاريخ المستقبل
-    # ===========================
+    # ========= IssueDate: منع تاريخ المستقبل =========
     posting_date = getattr(doc, "posting_date", None)
     issue_date_dt = getdate(posting_date) if posting_date else getdate()
     today_dt = getdate(today())
     if issue_date_dt > today_dt:
         issue_date_dt = today_dt
     issue_date = str(issue_date_dt)
-    # ===========================
+    # =================================================
 
     inv_code = CREDIT_NOTE if is_return else INVOICE
     inv_name_attr = "022"  # ثابت زي المثال المقبول
@@ -209,21 +217,34 @@ def build_invoice_xml(sales_invoice_name: str) -> str:
     for it in (doc.items or []):
         raw_qty = _dec(getattr(it, "qty", 0) or 0)
         qty = abs(raw_qty) if is_return else raw_qty
-        rate = abs(_dec(getattr(it, "rate", 0) or 0)) if is_return else _dec(getattr(it, "rate", 0) or 0)
+
+        rate = _dec(getattr(it, "rate", 0) or 0)
+        if is_return:
+            rate = abs(rate)
+
         unit_code = _uom_code(getattr(it, "uom", None))
-        line_disc = abs(_dec(getattr(it, "discount_amount", 0) or 0)) if is_return else _dec(getattr(it, "discount_amount", 0) or 0)
+
+        line_disc = _dec(getattr(it, "discount_amount", 0) or 0)
+        if is_return:
+            line_disc = abs(line_disc)
 
         vat_rate = _parse_item_vat_rate(it) or global_vat
 
         line_net = (qty * rate) - line_disc
         if line_net < 0:
             line_net = Decimal("0.0")
+
         line_vat = (line_net * vat_rate / Decimal("100"))
 
         net_sum += line_net
         vat_sum += line_vat
 
-        item_name = (getattr(it, "item_name", "") or getattr(it, "item_code", "") or getattr(it, "description", "") or "Item").strip() or "Item"
+        item_name = (
+            getattr(it, "item_name", "")
+            or getattr(it, "item_code", "")
+            or getattr(it, "description", "")
+            or "Item"
+        ).strip() or "Item"
 
         lines.append({
             "name": item_name,
@@ -269,7 +290,7 @@ def build_invoice_xml(sales_invoice_name: str) -> str:
         orig_id = getattr(doc, "return_against", "") or getattr(doc, "amended_from", "") or ""
         if orig_id:
             try:
-                orig = frappe.get_doc("Sales Invoice", orig_id)
+                orig = frappe.get_doc(doctype, orig_id)  # نفس نوع المستند
                 orig_total = _dec(getattr(orig, "grand_total", 0) or 0)
                 orig_uuid = getattr(orig, "jofotara_uuid", "") or ""
             except Exception:
@@ -335,7 +356,7 @@ def build_invoice_xml(sales_invoice_name: str) -> str:
         pid2 = SubElement(p2, _qn("cac", "PartyIdentification"))
         SubElement(pid2, _qn("cbc", "ID")).text = activity
 
-    # ✅ PaymentMeans يأتي هنا (بعد SellerSupplierParty) فى حالة المرتجع
+    # PaymentMeans في حالة المرتجع فقط
     if is_return:
         pm = SubElement(inv, _qn("cac", "PaymentMeans"))
         SubElement(pm, _qn("cbc", "PaymentMeansCode"), {"listID": "UN/ECE 4461"}).text = "10"
@@ -353,15 +374,21 @@ def build_invoice_xml(sales_invoice_name: str) -> str:
     head_tax = SubElement(inv, _qn("cac", "TaxTotal"))
     SubElement(head_tax, _qn("cbc", "TaxAmount"), {"currencyID": cur_id}).text = _fmt(vat_sum)
     if is_return:
-        # زي Odoo في المرتجع: نضيف TaxSubtotal في الهيدر
+        # في المرتجع نضيف TaxSubtotal في الهيدر
         hts = SubElement(head_tax, _qn("cac", "TaxSubtotal"))
         SubElement(hts, _qn("cbc", "TaxableAmount"), {"currencyID": cur_id}).text = _fmt(net_after_header_disc)
         SubElement(hts, _qn("cbc", "TaxAmount"), {"currencyID": cur_id}).text = _fmt(vat_sum)
         tcat = SubElement(hts, _qn("cac", "TaxCategory"))
-        SubElement(tcat, _qn("cbc", "ID"), {"schemeAgencyID": VAT_SCHEME_AGENCY, "schemeID": VAT_SCHEME_5305}).text = "S"
+        SubElement(tcat, _qn("cbc", "ID"), {
+            "schemeAgencyID": VAT_SCHEME_AGENCY,
+            "schemeID": VAT_SCHEME_5305,
+        }).text = "S"
         SubElement(tcat, _qn("cbc", "Percent")).text = f"{_q3(global_vat):.1f}"
         tsch = SubElement(tcat, _qn("cac", "TaxScheme"))
-        SubElement(tsch, _qn("cbc", "ID"), {"schemeAgencyID": VAT_SCHEME_AGENCY, "schemeID": VAT_SCHEME_5153}).text = "VAT"
+        SubElement(tsch, _qn("cbc", "ID"), {
+            "schemeAgencyID": VAT_SCHEME_AGENCY,
+            "schemeID": VAT_SCHEME_5153,
+        }).text = "VAT"
 
     # LegalMonetaryTotal
     lmt = SubElement(inv, _qn("cac", "LegalMonetaryTotal"))
@@ -390,10 +417,16 @@ def build_invoice_xml(sales_invoice_name: str) -> str:
         SubElement(tsub, _qn("cbc", "TaxableAmount"), {"currencyID": cur_id}).text = _fmt(L["line_net"])
         SubElement(tsub, _qn("cbc", "TaxAmount"), {"currencyID": cur_id}).text = _fmt(L["line_vat"])
         tcat = SubElement(tsub, _qn("cac", "TaxCategory"))
-        SubElement(tcat, _qn("cbc", "ID"), {"schemeAgencyID": VAT_SCHEME_AGENCY, "schemeID": VAT_SCHEME_5305}).text = "S"
+        SubElement(tcat, _qn("cbc", "ID"), {
+            "schemeAgencyID": VAT_SCHEME_AGENCY,
+            "schemeID": VAT_SCHEME_5305,
+        }).text = "S"
         SubElement(tcat, _qn("cbc", "Percent")).text = f"{_q3(L['vat_rate']):.1f}"
         tsch = SubElement(tcat, _qn("cac", "TaxScheme"))
-        SubElement(tsch, _qn("cbc", "ID"), {"schemeAgencyID": VAT_SCHEME_AGENCY, "schemeID": VAT_SCHEME_5153}).text = "VAT"
+        SubElement(tsch, _qn("cbc", "ID"), {
+            "schemeAgencyID": VAT_SCHEME_AGENCY,
+            "schemeID": VAT_SCHEME_5153,
+        }).text = "VAT"
 
         # Item
         item = SubElement(il, _qn("cac", "Item"))
