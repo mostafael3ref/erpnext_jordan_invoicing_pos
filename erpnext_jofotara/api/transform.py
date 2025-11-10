@@ -167,22 +167,13 @@ def _global_vat_rate(doc) -> Decimal:
 
 def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
     """
-    يولّد UBL 2.1 بمعيار Odoo المقبول لدى JoFotara:
-
-      - يدعم:
-        * Sales Invoice
-        * POS Invoice
-
-      - ProfileID=reporting:1.0
-      - name="022" مع القيمة 388 للفاتورة، 381 للمرتجع
-      - Document/TaxCurrencyCode = JOD، وكل currencyID داخل المبالغ = JO
-      - الفاتورة: Header TaxTotal بدون Subtotal
-      - المرتجع: Header TaxTotal + TaxSubtotal
-      - الكميات في المرتجع موجبة (زي Odoo)
-      - BillingReference و PaymentMeans في المرتجع
+    يدعم:
+      - Sales Invoice
+      - POS Invoice
+    ويولّد UBL 2.1 وفق متطلبات JoFotara.
     """
 
-    # نجيب المستند (Sales أو POS) ديناميك
+    # نجيب المستند ديناميك حسب النوع
     doc = frappe.get_doc(doctype, name)
 
     is_return = int(getattr(doc, "is_return", 0) or 0) == 1
@@ -261,8 +252,20 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
     if net_after_header_disc < 0:
         net_after_header_disc = Decimal("0.0")
 
-    inclusive_total = net_after_header_disc + vat_sum
-    payable = inclusive_total
+    inclusive_calc = net_after_header_disc + vat_sum  # نظريًا
+
+    # ========== استخدام Grand / Rounded Total من المستند ==========
+    grand_total = _dec(getattr(doc, "grand_total", 0) or inclusive_calc)
+    rounded_total = _dec(getattr(doc, "rounded_total", 0) or 0)
+    disable_rounded = int(getattr(doc, "disable_rounded_total", 0) or 0)
+
+    if rounded_total and not disable_rounded:
+        tax_inclusive_total = rounded_total
+        payable = rounded_total
+    else:
+        tax_inclusive_total = grand_total
+        payable = grand_total
+    # ===============================================================
 
     # ===== XML =====
     inv = Element(_qn("inv", "Invoice"))
@@ -282,7 +285,7 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
     SubElement(inv, _qn("cbc", "DocumentCurrencyCode")).text = currency_doc
     SubElement(inv, _qn("cbc", "TaxCurrencyCode")).text = currency_doc
 
-    # المرتجع: BillingReference (قبل AdditionalDocumentReference حسب الـXSD المقبول)
+    # المرتجع: BillingReference
     orig_id = ""
     orig_uuid = ""
     orig_total = None
@@ -290,7 +293,7 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
         orig_id = getattr(doc, "return_against", "") or getattr(doc, "amended_from", "") or ""
         if orig_id:
             try:
-                orig = frappe.get_doc(doctype, orig_id)  # نفس نوع المستند
+                orig = frappe.get_doc(doctype, orig_id)
                 orig_total = _dec(getattr(orig, "grand_total", 0) or 0)
                 orig_uuid = getattr(orig, "jofotara_uuid", "") or ""
             except Exception:
@@ -374,7 +377,6 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
     head_tax = SubElement(inv, _qn("cac", "TaxTotal"))
     SubElement(head_tax, _qn("cbc", "TaxAmount"), {"currencyID": cur_id}).text = _fmt(vat_sum)
     if is_return:
-        # في المرتجع نضيف TaxSubtotal في الهيدر
         hts = SubElement(head_tax, _qn("cac", "TaxSubtotal"))
         SubElement(hts, _qn("cbc", "TaxableAmount"), {"currencyID": cur_id}).text = _fmt(net_after_header_disc)
         SubElement(hts, _qn("cbc", "TaxAmount"), {"currencyID": cur_id}).text = _fmt(vat_sum)
@@ -393,7 +395,7 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
     # LegalMonetaryTotal
     lmt = SubElement(inv, _qn("cac", "LegalMonetaryTotal"))
     SubElement(lmt, _qn("cbc", "TaxExclusiveAmount"), {"currencyID": cur_id}).text = _fmt(net_after_header_disc)
-    SubElement(lmt, _qn("cbc", "TaxInclusiveAmount"), {"currencyID": cur_id}).text = _fmt(inclusive_total)
+    SubElement(lmt, _qn("cbc", "TaxInclusiveAmount"), {"currencyID": cur_id}).text = _fmt(tax_inclusive_total)
     SubElement(lmt, _qn("cbc", "AllowanceTotalAmount"), {"currencyID": cur_id}).text = _fmt(header_discount)
     if is_return:
         SubElement(lmt, _qn("cbc", "PrepaidAmount"), {"currencyID": cur_id}).text = _fmt(0)
