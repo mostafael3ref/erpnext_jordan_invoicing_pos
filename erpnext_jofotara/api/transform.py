@@ -400,7 +400,6 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
     SubElement(lmt, _qn("cbc", "PayableAmount"), {"currencyID": cur_id}).text = _fmt(payable)
 
     # Lines
-    single_line = (len(lines) == 1)
     for idx, L in enumerate(lines, start=1):
         il = SubElement(inv, _qn("cac", "InvoiceLine"))
         SubElement(il, _qn("cbc", "ID")).text = str(idx)
@@ -410,8 +409,10 @@ def build_invoice_xml(name: str, doctype: str = "Sales Invoice") -> str:
         # Line TaxTotal + Subtotal
         ttotal = SubElement(il, _qn("cac", "TaxTotal"))
         SubElement(ttotal, _qn("cbc", "TaxAmount"), {"currencyID": cur_id}).text = _fmt(L["line_vat"])
-        if single_line:
-            SubElement(ttotal, _qn("cbc", "RoundingAmount"), {"currencyID": cur_id}).text = _fmt(payable)
+
+        # *** المهم: RoundingAmount لكل سطر (صافي السطر + الضريبة) ***
+        line_gross = L["line_net"] + L["line_vat"]
+        SubElement(ttotal, _qn("cbc", "RoundingAmount"), {"currencyID": cur_id}).text = _fmt(line_gross)
 
         tsub = SubElement(ttotal, _qn("cac", "TaxSubtotal"))
         SubElement(tsub, _qn("cbc", "TaxableAmount"), {"currencyID": cur_id}).text = _fmt(L["line_net"])
